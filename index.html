@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>오목 (렌주룰)</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", sans-serif; background: #16161c; color: #e8e8ee; }
+  body { display: flex; flex-direction: column; align-items: center; min-height: 100%; }
+
+  header { padding: 14px; text-align: center; }
+  header h1 { font-size: 18px; letter-spacing: .5px; }
+  header p { font-size: 12px; opacity: .5; margin-top: 3px; }
+
+  .status { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; min-height: 26px; padding: 4px 14px; }
+  .stone-dot { width: 16px; height: 16px; border-radius: 50%; display: inline-block; vertical-align: middle; }
+  .black-dot { background: radial-gradient(circle at 35% 30%, #555, #000); }
+  .white-dot { background: radial-gradient(circle at 35% 30%, #fff, #bbb); border: 1px solid #888; }
+  .status.win { color: #ffd166; }
+  .status.foul { color: #ff6b6b; }
+
+  .board-wrap { width: min(94vw, 70vh); aspect-ratio: 1; position: relative; margin: 4px; }
+  canvas { display: block; width: 100%; height: 100%; border-radius: 8px; box-shadow: 0 8px 30px rgba(0,0,0,.4); cursor: pointer; }
+
+  .controls { display: flex; gap: 10px; padding: 14px; flex-wrap: wrap; justify-content: center; }
+  button { background: #383842; color: #e8e8ee; border: 1px solid #4a4a57; border-radius: 9px; padding: 9px 16px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background .12s; }
+  button:hover { background: #45454f; }
+
+  .overlay { position: fixed; inset: 0; background: rgba(12,12,16,.92); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; z-index: 10; }
+  .overlay h2 { font-size: 30px; letter-spacing: 1px; }
+  .overlay p { opacity: .6; font-size: 13px; max-width: 320px; text-align: center; line-height: 1.6; }
+  .overlay .modes { display: flex; gap: 16px; margin-top: 6px; flex-wrap: wrap; justify-content: center; }
+  .overlay .modes button { padding: 18px 28px; font-size: 16px; background: #6c8cff; border-color: #6c8cff; color: #fff; }
+  .overlay .modes button:hover { background: #5577ff; }
+  .overlay .modes button.alt { background: #2a9d6f; border-color: #2a9d6f; }
+  .overlay .modes button.alt:hover { background: #248a60; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>⚫⚪ 오목 <span style="opacity:.4;font-weight:400;font-size:13px">렌주룰</span></h1>
+    <p id="modeLabel"></p>
+  </header>
+
+  <div class="status" id="status"><span class="stone-dot black-dot"></span> 흑 차례</div>
+  <div class="board-wrap"><canvas id="board"></canvas></div>
+
+  <div class="controls">
+    <button id="undoBtn">↶ 무르기</button>
+    <button id="restartBtn">🔄 새 게임</button>
+    <button id="menuBtn">☰ 모드 변경</button>
+  </div>
+
+  <div class="overlay" id="overlay">
+    <h2>오목</h2>
+    <p>흑(선공)에는 렌주룰 금수가 적용됩니다 — <b>3-3</b>, <b>4-4</b>, <b>장목(6목)</b> 자리는 둘 수 없어요. (흑 차례엔 금수 자리에 ✕ 표시)</p>
+    <div class="modes">
+      <button id="pvpBtn">👥 2인 대전</button>
+      <button id="aiBtn" class="alt">🤖 AI 대전</button>
+    </div>
+    <p style="opacity:.4">AI 대전 시 — 당신: ● 흑(선공) · AI: ○ 백</p>
+  </div>
+
+<script>
+const SIZE = 15;
+const EMPTY = 0, BLACK = 1, WHITE = 2;
+const DIRS = [[1,0],[0,1],[1,1],[1,-1]];
+const STARS = [[3,3],[11,3],[3,11],[11,11],[7,7]];
+
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+const overlay = document.getElementById('overlay');
+const modeLabel = document.getElementById('modeLabel');
+
+let board, currentPlayer, mode, gameOver, winner, history, lastMove, winningCells;
+let cell, origin, dpr;
+
+// ---------- geometry ----------
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  const size = canvas.clientWidth;
+  canvas.width = size * dpr;
+  canvas.height = size * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const span = size * 0.9;
+  cell = span / (SIZE - 1);
+  origin = (size - span) / 2;
+  draw();
+}
+window.addEventListener('resize', resize);
+
+function inBounds(x, y) { return x >= 0 && x < SIZE && y >= 0 && y < SIZE; }
+
+// ---------- core run helpers ----------
+function lineLen(x, y, player, dx, dy) {
+  let c = 1, i = 1;
+  while (inBounds(x + dx*i, y + dy*i) && board[y+dy*i][x+dx*i] === player) { c++; i++; }
+  i = 1;
+  while (inBounds(x - dx*i, y - dy*i) && board[y-dy*i][x-dx*i] === player) { c++; i++; }
+  return c;
+}
+
+function checkWin(x, y, player) {
+  for (const [dx, dy] of DIRS) {
+    const cells = [[x, y]];
+    let i = 1;
+    while (inBounds(x+dx*i, y+dy*i) && board[y+dy*i][x+dx*i] === player) { cells.push([x+dx*i, y+dy*i]); i++; }
+    i = 1;
+    while (inBounds(x-dx*i, y-dy*i) && board[y-dy*i][x-dx*i] === player) { cells.push([x-dx*i, y-dy*i]); i++; }
+    if (player === BLACK ? cells.length === 5 : cells.length >= 5) return cells;
+  }
+  return null;
+}
+
+// ---------- renju forbidden detection (BLACK only) ----------
+function getWindow(x, y, dx, dy) {
+  let s = '';
+  for (let k = -5; k <= 5; k++) {
+    const nx = x + dx*k, ny = y + dy*k;
+    if (!inBounds(nx, ny)) s += '2';
+    else s += board[ny][nx] === BLACK ? '1' : (board[ny][nx] === EMPTY ? '0' : '2');
+  }
+  return s; // center index = 5
+}
+function runThrough(s, idx) {
+  if (s[idx] !== '1') return 0;
+  let c = 1, i = idx + 1;
+  while (s[i] === '1') { c++; i++; }
+  i = idx - 1;
+  while (s[i] === '1') { c++; i--; }
+  return c;
+}
+function isFourDir(w) { // can one fill make exactly five through center?
+  for (let j = 0; j < w.length; j++) {
+    if (w[j] !== '0') continue;
+    const t = w.slice(0, j) + '1' + w.slice(j + 1);
+    if (runThrough(t, 5) === 5) return true;
+  }
+  return false;
+}
+function isOpenThreeDir(w) { // can one fill make an open four (_BBBB_)?
+  for (let j = 0; j < w.length; j++) {
+    if (w[j] !== '0') continue;
+    const t = w.slice(0, j) + '1' + w.slice(j + 1);
+    if (t.includes('011110')) return true;
+  }
+  return false;
+}
+// returns reason string if forbidden, else null. (x,y) must be empty.
+function forbiddenReason(x, y) {
+  board[y][x] = BLACK;
+  let five = false, over = false;
+  for (const [dx, dy] of DIRS) {
+    const L = lineLen(x, y, BLACK, dx, dy);
+    if (L === 5) five = true;
+    if (L >= 6) over = true;
+  }
+  let reason = null;
+  if (five) { reason = null; }           // making five wins — always allowed
+  else if (over) { reason = '장목 (6목)'; }
+  else {
+    let fours = 0, threes = 0;
+    for (const [dx, dy] of DIRS) {
+      const w = getWindow(x, y, dx, dy);
+      if (isFourDir(w)) fours++;
+      else if (isOpenThreeDir(w)) threes++;
+    }
+    if (fours >= 2) reason = '4-4';
+    else if (threes >= 2) reason = '3-3';
+  }
+  board[y][x] = EMPTY;
+  return reason;
+}
+
+// ---------- AI (white) ----------
+function lineScore(x, y, player, dx, dy) {
+  let count = 1, i = 1;
+  while (inBounds(x+dx*i, y+dy*i) && board[y+dy*i][x+dx*i] === player) { count++; i++; }
+  const openF = inBounds(x+dx*i, y+dy*i) && board[y+dy*i][x+dx*i] === EMPTY;
+  i = 1;
+  while (inBounds(x-dx*i, y-dy*i) && board[y-dy*i][x-dx*i] === player) { count++; i++; }
+  const openB = inBounds(x-dx*i, y-dy*i) && board[y-dy*i][x-dx*i] === EMPTY;
+  const ends = (openF ? 1 : 0) + (openB ? 1 : 0);
+  if (count >= 5) return 100000;
+  if (count === 4) return ends === 2 ? 20000 : (ends === 1 ? 2000 : 0);
+  if (count === 3) return ends === 2 ? 2000 : (ends === 1 ? 200 : 0);
+  if (count === 2) return ends === 2 ? 200 : (ends === 1 ? 20 : 0);
+  if (count === 1) return ends === 2 ? 10 : (ends === 1 ? 2 : 0);
+  return 0;
+}
+function scoreCell(x, y, player) {
+  board[y][x] = player;
+  let s = 0;
+  for (const [dx, dy] of DIRS) s += lineScore(x, y, player, dx, dy);
+  board[y][x] = EMPTY;
+  return s;
+}
+function hasNeighbor(x, y) {
+  for (let dy = -2; dy <= 2; dy++)
+    for (let dx = -2; dx <= 2; dx++) {
+      if (dx === 0 && dy === 0) continue;
+      if (inBounds(x+dx, y+dy) && board[y+dy][x+dx] !== EMPTY) return true;
+    }
+  return false;
+}
+function aiMove() {
+  if (gameOver) return;
+  let best = -1, choice = null;
+  for (let y = 0; y < SIZE; y++)
+    for (let x = 0; x < SIZE; x++) {
+      if (board[y][x] !== EMPTY || !hasNeighbor(x, y)) continue;
+      const off = scoreCell(x, y, WHITE);          // AI's own gain
+      const def = scoreCell(x, y, BLACK);          // value of blocking human
+      const v = off + def * 0.9 + Math.random() * 5;
+      if (v > best) { best = v; choice = [x, y]; }
+    }
+  if (!choice) choice = [7, 7];
+  doMove(choice[0], choice[1], WHITE);
+}
+
+// ---------- game flow ----------
+function doMove(x, y, player) {
+  board[y][x] = player;
+  history.push([x, y, player]);
+  lastMove = [x, y];
+  const win = checkWin(x, y, player);
+  if (win) { gameOver = true; winner = player; winningCells = win; }
+  else currentPlayer = player === BLACK ? WHITE : BLACK;
+  draw();
+  updateStatus();
+}
+function tryPlace(x, y) {
+  if (gameOver || !inBounds(x, y) || board[y][x] !== EMPTY) return;
+  if (mode === 'ai' && currentPlayer !== BLACK) return; // AI's turn
+  if (currentPlayer === BLACK) {
+    const r = forbiddenReason(x, y);
+    if (r) { flashFoul(r); return; }
+  }
+  doMove(x, y, currentPlayer);
+  if (!gameOver && mode === 'ai' && currentPlayer === WHITE) setTimeout(aiMove, 220);
+}
+function undo() {
+  if (!history.length) return;
+  let plies = (mode === 'ai') ? 2 : 1;
+  while (plies-- > 0 && history.length) {
+    const [x, y] = history.pop();
+    board[y][x] = EMPTY;
+  }
+  gameOver = false; winner = null; winningCells = null;
+  if (mode === 'ai') currentPlayer = BLACK;
+  else currentPlayer = history.length ? (history[history.length-1][2] === BLACK ? WHITE : BLACK) : BLACK;
+  lastMove = history.length ? history[history.length-1].slice(0, 2) : null;
+  draw();
+  updateStatus();
+}
+function newGame() {
+  board = Array.from({ length: SIZE }, () => Array(SIZE).fill(EMPTY));
+  currentPlayer = BLACK;
+  gameOver = false; winner = null; history = []; lastMove = null; winningCells = null;
+  draw();
+  updateStatus();
+}
+function startMode(m) {
+  mode = m;
+  modeLabel.textContent = m === 'ai' ? '🤖 AI 대전 · 당신 ● 흑 / AI ○ 백' : '👥 2인 대전';
+  overlay.classList.add('hidden');
+  newGame();
+}
+
+// ---------- status ----------
+let foulTimer = null;
+function flashFoul(reason) {
+  clearTimeout(foulTimer);
+  statusEl.className = 'status foul';
+  statusEl.innerHTML = `🚫 금수: ${reason} — 둘 수 없는 자리입니다`;
+  foulTimer = setTimeout(updateStatus, 1600);
+}
+function updateStatus() {
+  clearTimeout(foulTimer);
+  if (gameOver) {
+    const w = winner === BLACK
+      ? '<span class="stone-dot black-dot"></span> 흑 승리!'
+      : (mode === 'ai' ? '<span class="stone-dot white-dot"></span> AI(백) 승리!' : '<span class="stone-dot white-dot"></span> 백 승리!');
+    statusEl.className = 'status win';
+    statusEl.innerHTML = '🏆 ' + w;
+    return;
+  }
+  statusEl.className = 'status';
+  const dot = currentPlayer === BLACK ? 'black-dot' : 'white-dot';
+  let who = currentPlayer === BLACK ? '흑' : '백';
+  if (mode === 'ai') who = currentPlayer === BLACK ? '당신(흑)' : 'AI(백)';
+  statusEl.innerHTML = `<span class="stone-dot ${dot}"></span> ${who} 차례`;
+}
+
+// ---------- rendering ----------
+function px(i) { return origin + i * cell; }
+function draw() {
+  const size = canvas.clientWidth;
+  // wood background
+  const g = ctx.createLinearGradient(0, 0, size, size);
+  g.addColorStop(0, '#e8c07d'); g.addColorStop(1, '#d9a85f');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  // grid
+  ctx.strokeStyle = 'rgba(60,40,20,.85)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 0; i < SIZE; i++) {
+    ctx.moveTo(px(0), px(i)); ctx.lineTo(px(SIZE-1), px(i));
+    ctx.moveTo(px(i), px(0)); ctx.lineTo(px(i), px(SIZE-1));
+  }
+  ctx.stroke();
+  // star points
+  ctx.fillStyle = 'rgba(60,40,20,.9)';
+  for (const [sx, sy] of STARS) {
+    ctx.beginPath();
+    ctx.arc(px(sx), px(sy), Math.max(2, cell * 0.08), 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // forbidden markers for black's turn
+  if (mode && !gameOver && currentPlayer === BLACK) {
+    ctx.strokeStyle = 'rgba(220,40,40,.85)';
+    ctx.lineWidth = 2;
+    for (let y = 0; y < SIZE; y++)
+      for (let x = 0; x < SIZE; x++) {
+        if (board[y][x] !== EMPTY) continue;
+        if (forbiddenReason(x, y)) {
+          const r = cell * 0.22, cx = px(x), cy = px(y);
+          ctx.beginPath();
+          ctx.moveTo(cx - r, cy - r); ctx.lineTo(cx + r, cy + r);
+          ctx.moveTo(cx + r, cy - r); ctx.lineTo(cx - r, cy + r);
+          ctx.stroke();
+        }
+      }
+  }
+  // stones
+  const r = cell * 0.42;
+  for (let y = 0; y < SIZE; y++)
+    for (let x = 0; x < SIZE; x++) {
+      if (board[y][x] === EMPTY) continue;
+      const cx = px(x), cy = px(y);
+      const grad = ctx.createRadialGradient(cx - r*0.35, cy - r*0.35, r*0.1, cx, cy, r);
+      if (board[y][x] === BLACK) { grad.addColorStop(0, '#666'); grad.addColorStop(1, '#0a0a0a'); }
+      else { grad.addColorStop(0, '#fff'); grad.addColorStop(1, '#c4c4c8'); }
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fill();
+      if (board[y][x] === WHITE) { ctx.strokeStyle = 'rgba(120,120,130,.6)'; ctx.lineWidth = 1; ctx.stroke(); }
+    }
+  // winning highlight
+  if (winningCells) {
+    ctx.strokeStyle = '#ff3b3b';
+    ctx.lineWidth = 3;
+    for (const [x, y] of winningCells) {
+      ctx.beginPath();
+      ctx.arc(px(x), px(y), r + 2, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  } else if (lastMove) {
+    ctx.fillStyle = '#ff3b3b';
+    ctx.beginPath();
+    ctx.arc(px(lastMove[0]), px(lastMove[1]), Math.max(2, cell * 0.1), 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// ---------- input ----------
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const x = Math.round((e.clientX - rect.left - origin) / cell);
+  const y = Math.round((e.clientY - rect.top - origin) / cell);
+  tryPlace(x, y);
+});
+
+document.getElementById('undoBtn').addEventListener('click', undo);
+document.getElementById('restartBtn').addEventListener('click', newGame);
+document.getElementById('menuBtn').addEventListener('click', () => overlay.classList.remove('hidden'));
+document.getElementById('pvpBtn').addEventListener('click', () => startMode('pvp'));
+document.getElementById('aiBtn').addEventListener('click', () => startMode('ai'));
+
+// init
+board = Array.from({ length: SIZE }, () => Array(SIZE).fill(EMPTY));
+currentPlayer = BLACK; gameOver = false; history = []; lastMove = null; winningCells = null;
+resize();
+</script>
+</body>
+</html>
