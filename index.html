@@ -35,6 +35,21 @@
   .overlay .modes button:hover { background: #5577ff; }
   .overlay .modes button.alt { background: #2a9d6f; border-color: #2a9d6f; }
   .overlay .modes button.alt:hover { background: #248a60; }
+  .note { color: #ffb454 !important; opacity: 1 !important; font-size: 12px; }
+
+  button.kakao { background: #FEE500; color: #181600; border-color: #FEE500; font-size: 16px; padding: 14px 26px; }
+  button.kakao:hover { background: #f5dd00; }
+
+  .userbox { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; justify-content: center; margin-top: 6px; }
+  .userbox img { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; }
+
+  .lb { width: min(94vw, 70vh); background: #21212a; border: 1px solid #33333d; border-radius: 10px; padding: 12px 16px; margin: 6px 0 24px; }
+  .lb h3 { font-size: 14px; margin-bottom: 8px; }
+  .lb ol { list-style: none; }
+  .lb li { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 5px 0; border-top: 1px solid #2c2c36; }
+  .lb li:first-child { border-top: none; }
+  .lb li b { width: 20px; opacity: .6; }
+  .lb li span { margin-left: auto; opacity: .55; font-size: 12px; }
   .hidden { display: none !important; }
 </style>
 </head>
@@ -42,6 +57,7 @@
   <header>
     <h1>⚫⚪ 오목 <span style="opacity:.4;font-weight:400;font-size:13px">렌주룰</span></h1>
     <p id="modeLabel"></p>
+    <div id="userBox" class="userbox hidden"></div>
   </header>
 
   <div class="status" id="status"><span class="stone-dot black-dot"></span> 흑 차례</div>
@@ -51,16 +67,29 @@
     <button id="undoBtn">↶ 무르기</button>
     <button id="restartBtn">🔄 새 게임</button>
     <button id="menuBtn">☰ 모드 변경</button>
+    <button id="logoutBtn" class="hidden">🚪 로그아웃</button>
+  </div>
+
+  <div class="lb hidden" id="lbPanel">
+    <h3>🏆 랭킹 — AI 대전 승수 TOP 10</h3>
+    <ol id="lbList"></ol>
   </div>
 
   <div class="overlay" id="overlay">
     <h2>오목</h2>
-    <p>흑(선공)에는 렌주룰 금수가 적용됩니다 — <b>3-3</b>, <b>4-4</b>, <b>장목(6목)</b> 자리는 둘 수 없어요. (흑 차례엔 금수 자리에 ✕ 표시)</p>
-    <div class="modes">
-      <button id="pvpBtn">👥 2인 대전</button>
-      <button id="aiBtn" class="alt">🤖 AI 대전</button>
+    <div id="loginSection">
+      <p>카카오 계정으로 로그인하면 <b>AI 대전 전적</b>이 랭킹에 기록됩니다.</p>
+      <button id="kakaoBtn" class="kakao">💬 카카오로 로그인</button>
+      <p id="loginNote" class="note"></p>
     </div>
-    <p style="opacity:.4">AI 대전 시 — 당신: ● 흑(선공) · AI: ○ 백</p>
+    <div id="modeSection" class="hidden">
+      <p>흑(선공)에는 렌주룰 금수가 적용됩니다 — <b>3-3</b>, <b>4-4</b>, <b>장목(6목)</b> 자리는 둘 수 없어요. (흑 차례엔 금수 자리에 ✕ 표시)</p>
+      <div class="modes">
+        <button id="pvpBtn">👥 2인 대전</button>
+        <button id="aiBtn" class="alt">🤖 AI 대전 (랭킹)</button>
+      </div>
+      <p style="opacity:.4">AI 대전 시 — 당신: ● 흑(선공) · AI: ○ 백</p>
+    </div>
   </div>
 
 <script>
@@ -77,6 +106,8 @@ const modeLabel = document.getElementById('modeLabel');
 
 let board, currentPlayer, mode, gameOver, winner, history, lastMove, winningCells;
 let cell, origin, dpr;
+
+window.OMOK = window.OMOK || {}; // auth/leaderboard module hooks in here
 
 // ---------- geometry ----------
 function resize() {
@@ -227,7 +258,10 @@ function doMove(x, y, player) {
   history.push([x, y, player]);
   lastMove = [x, y];
   const win = checkWin(x, y, player);
-  if (win) { gameOver = true; winner = player; winningCells = win; }
+  if (win) {
+    gameOver = true; winner = player; winningCells = win;
+    if (window.OMOK.onGameOver) window.OMOK.onGameOver(winner, mode);
+  }
   else currentPlayer = player === BLACK ? WHITE : BLACK;
   draw();
   updateStatus();
@@ -386,6 +420,84 @@ document.getElementById('aiBtn').addEventListener('click', () => startMode('ai')
 board = Array.from({ length: SIZE }, () => Array(SIZE).fill(EMPTY));
 currentPlayer = BLACK; gameOver = false; history = []; lastMove = null; winningCells = null;
 resize();
+</script>
+
+<script type="module">
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+// ====== 설정: Supabase 대시보드의 값으로 교체하세요 ======
+const SUPABASE_URL = 'https://czyrpsskeyfuyxmnezsg.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN6eXJwc3NrZXlmdXl4bW5lenNnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk0MDIxMTIsImV4cCI6MjA5NDk3ODExMn0.Drd_auezK01gtRfNniidwKmIs1rbxhgM46LiiBgn_5s';
+// =====================================================
+
+const configured = !SUPABASE_URL.startsWith('__') && !SUPABASE_ANON_KEY.startsWith('__');
+
+const loginSection = document.getElementById('loginSection');
+const modeSection = document.getElementById('modeSection');
+const userBox = document.getElementById('userBox');
+const logoutBtn = document.getElementById('logoutBtn');
+const lbPanel = document.getElementById('lbPanel');
+const lbList = document.getElementById('lbList');
+
+const showModes = () => { loginSection.classList.add('hidden'); modeSection.classList.remove('hidden'); };
+const showLogin = () => { modeSection.classList.add('hidden'); loginSection.classList.remove('hidden'); };
+
+let supabase = null, currentUser = null;
+
+if (!configured) {
+  // Supabase 미설정 — 로그인 없이 게스트 플레이 (전적 저장 안 됨)
+  document.getElementById('loginNote').textContent = '⚠ 로그인 미설정 — 게스트 플레이 (전적은 저장되지 않습니다)';
+  document.getElementById('kakaoBtn').disabled = true;
+  document.getElementById('kakaoBtn').style.opacity = '.5';
+  showModes();
+} else {
+  supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  document.getElementById('kakaoBtn').addEventListener('click', () =>
+    supabase.auth.signInWithOAuth({ provider: 'kakao', options: { redirectTo: window.location.origin } }));
+  logoutBtn.addEventListener('click', () => supabase.auth.signOut());
+
+  supabase.auth.onAuthStateChange((_evt, session) => syncUser(session?.user || null));
+  const { data } = await supabase.auth.getSession();
+  await syncUser(data.session?.user || null);
+
+  // 게임 종료 시 호출됨 — AI 대전만 랭킹에 기록 (당신=흑)
+  window.OMOK.onGameOver = async (winnerSide, mode) => {
+    if (!currentUser || mode !== 'ai') return;
+    const result = winnerSide === 1 ? 'win' : 'loss';
+    await supabase.from('match_results').insert({ player_id: currentUser.id, result, mode: 'ai' });
+    loadLeaderboard();
+  };
+}
+
+async function syncUser(user) {
+  currentUser = user;
+  if (user) {
+    const m = user.user_metadata || {};
+    const nickname = m.name || m.nickname || m.user_name || m.full_name || '플레이어';
+    const avatar = m.avatar_url || m.picture || '';
+    userBox.innerHTML = (avatar ? `<img src="${avatar}" alt="">` : '') + `<span>${nickname}</span>`;
+    userBox.classList.remove('hidden');
+    logoutBtn.classList.remove('hidden');
+    lbPanel.classList.remove('hidden');
+    await supabase.from('profiles').upsert({ id: user.id, nickname, avatar_url: avatar });
+    showModes();
+    loadLeaderboard();
+  } else {
+    userBox.classList.add('hidden');
+    logoutBtn.classList.add('hidden');
+    lbPanel.classList.add('hidden');
+    showLogin();
+  }
+}
+
+async function loadLeaderboard() {
+  const { data, error } = await supabase.from('leaderboard').select('*').order('wins', { ascending: false }).limit(10);
+  if (error) { lbList.innerHTML = '<li>랭킹을 불러오지 못했습니다</li>'; return; }
+  lbList.innerHTML = (data && data.length)
+    ? data.map((r, i) => `<li><b>${i + 1}</b>${r.avatar_url ? `<img src="${r.avatar_url}" style="width:20px;height:20px;border-radius:50%">` : ''} ${r.nickname || '?'} <span>${r.wins}승 · ${r.games}판</span></li>`).join('')
+    : '<li>아직 기록이 없습니다 — 첫 승리의 주인공이 되어보세요!</li>';
+}
 </script>
 </body>
 </html>
