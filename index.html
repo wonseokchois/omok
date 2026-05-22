@@ -454,7 +454,10 @@ if (!configured) {
   supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
   document.getElementById('kakaoBtn').addEventListener('click', () =>
-    supabase.auth.signInWithOAuth({ provider: 'kakao', options: { redirectTo: window.location.origin } }));
+    supabase.auth.signInWithOAuth({
+      provider: 'kakao',
+      options: { redirectTo: window.location.origin, scopes: 'profile_nickname profile_image' }
+    }));
   logoutBtn.addEventListener('click', () => supabase.auth.signOut());
 
   supabase.auth.onAuthStateChange((_evt, session) => syncUser(session?.user || null));
